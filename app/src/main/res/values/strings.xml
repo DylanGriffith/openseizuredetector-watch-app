@@ -3,4 +3,8 @@
     <string name="heart_rate_text">HR: %1$s</string>
     <string name="tile_label">Example tile</string>
     <string name="complication_label">Example complication</string>
+    <string name="notification_channel_name">Sensor Data Service</string>
+    <string name="notification_channel_description">Service for collecting and sending sensor data</string>
+    <string name="notification_title">Sensor Data Active</string>
+    <string name="notification_text">Collecting sensor data in background</string>
 </resources>
