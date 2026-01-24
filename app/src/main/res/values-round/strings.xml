@@ -1,3 +1,3 @@
 <resources>
-    <string name="heart_rate_text">HR: %1$s</string>
+    <string name="heart_rate_text">Heart rate: %1$s</string>
 </resources>
