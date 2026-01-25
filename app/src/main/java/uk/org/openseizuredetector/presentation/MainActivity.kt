@@ -1,10 +1,14 @@
 package uk.org.openseizuredetector.presentation
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -33,8 +37,6 @@ import uk.org.openseizuredetector.service.SensorDataService
 class MainActivity : ComponentActivity() {
 
     private val tag = "MainActivity"
-    private val heartRate = mutableIntStateOf(0)
-
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
@@ -50,10 +52,6 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         setTheme(android.R.style.Theme_DeviceDefault)
-
-        setContent {
-            WearApp(heartRate.intValue)
-        }
 
         val permissions = arrayOf(
             Manifest.permission.BODY_SENSORS,
@@ -88,19 +86,14 @@ fun WearApp(heartRate: Int = 0) {
             contentAlignment = Alignment.Center
         ) {
             TimeText()
-            HeartRateText(heartRate = heartRate.toString())
+            Text(
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colors.primary,
+                text = "Running..."
+            )
         }
     }
-}
-
-@Composable
-fun HeartRateText(heartRate: String) {
-    Text(
-        modifier = Modifier.fillMaxWidth(),
-        textAlign = TextAlign.Center,
-        color = MaterialTheme.colors.primary,
-        text = stringResource(R.string.heart_rate_text, heartRate)
-    )
 }
 
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
