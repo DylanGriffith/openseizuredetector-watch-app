@@ -3,6 +3,7 @@ package uk.org.openseizuredetector.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.IntentFilter
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import uk.org.openseizuredetector.R
+import uk.org.openseizuredetector.presentation.MainActivity
 import java.nio.charset.StandardCharsets
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -75,6 +77,9 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     private var dismissGraceUntilMillis = 0L
     private var lastAlarmStateMillis = 0L
 
+    // Alarm state currently shown as a notification (UNKNOWN = none showing)
+    private var shownAlarmNotificationState = AlarmStates.UNKNOWN
+
     private val _uiState = MutableStateFlow(WatchUiState())
     val uiState: StateFlow<WatchUiState> = _uiState.asStateFlow()
 
@@ -105,7 +110,18 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(tag, "SensorDataService started")
+        Log.d(tag, "SensorDataService started, action=${intent?.action}")
+        // Actions triggered from the alarm notification buttons
+        when (intent?.action) {
+            ACTION_DISMISS_ALARM -> {
+                dismissAlarm()
+                return START_STICKY
+            }
+            ACTION_PAUSE_ALARMS -> {
+                pauseAlarms()
+                return START_STICKY
+            }
+        }
         startSensors()
         handler.removeCallbacks(periodicTickRunnable)
         handler.removeCallbacks(settingsRunnable)
@@ -319,11 +335,76 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 now < dismissGraceUntilMillis ||
                 !state.phoneConnected
         when {
-            suppressed -> alerter.stopAll()
-            state.alarmState in AlarmStates.ALARMING -> alerter.startAlarm()
-            state.alarmState == AlarmStates.WARNING -> alerter.startWarning()
-            else -> alerter.stopAll()
+            suppressed -> {
+                alerter.stopAll()
+                cancelAlarmNotification()
+            }
+
+            state.alarmState in AlarmStates.ALARMING -> {
+                alerter.startAlarm()
+                showAlarmNotification(state)
+            }
+
+            state.alarmState == AlarmStates.WARNING -> {
+                alerter.startWarning()
+                showAlarmNotification(state)
+            }
+
+            else -> {
+                alerter.stopAll()
+                cancelAlarmNotification()
+            }
         }
+    }
+
+    /**
+     * Post a full-screen, high-priority notification so the alarm surfaces even when
+     * the screen is off or another app is in the foreground.  The full-screen intent
+     * opens MainActivity (which has the big dismiss button); the notification itself
+     * carries Dismiss and Pause actions for one-tap handling.
+     */
+    private fun showAlarmNotification(state: WatchUiState) {
+        if (shownAlarmNotificationState == state.alarmState) return
+        shownAlarmNotificationState = state.alarmState
+
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val fullScreenIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            flags
+        )
+        val dismissIntent = PendingIntent.getService(
+            this, 1,
+            Intent(this, SensorDataService::class.java).setAction(ACTION_DISMISS_ALARM),
+            flags
+        )
+        val pauseIntent = PendingIntent.getService(
+            this, 2,
+            Intent(this, SensorDataService::class.java).setAction(ACTION_PAUSE_ALARMS),
+            flags
+        )
+
+        val title = if (state.alarmState in AlarmStates.ALARMING) "SEIZURE ALARM" else "Seizure warning"
+        val notification = NotificationCompat.Builder(this, ALARM_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(state.alarmPhrase.ifBlank { AlarmStates.name(state.alarmState) })
+            .setSmallIcon(R.drawable.ic_notification)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true)
+            .setContentIntent(fullScreenIntent)
+            .setFullScreenIntent(fullScreenIntent, true)
+            .addAction(0, "Dismiss", dismissIntent)
+            .addAction(0, "Pause 1h", pauseIntent)
+            .build()
+        notificationManager.notify(ALARM_NOTIFICATION_ID, notification)
+    }
+
+    private fun cancelAlarmNotification() {
+        if (shownAlarmNotificationState == AlarmStates.UNKNOWN) return
+        shownAlarmNotificationState = AlarmStates.UNKNOWN
+        notificationManager.cancel(ALARM_NOTIFICATION_ID)
     }
 
     // -------------------------------------------------------------- periodics
@@ -382,6 +463,20 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
         notificationManager.createNotificationChannel(channel)
+
+        // Alarm channel: high importance so it pops up, but silent - the Alerter
+        // owns vibration and sound, and channel effects would fight with it.
+        val alarmChannel = NotificationChannel(
+            ALARM_CHANNEL_ID,
+            getString(R.string.alarm_channel_name),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = getString(R.string.alarm_channel_description)
+            setSound(null, null)
+            enableVibration(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        notificationManager.createNotificationChannel(alarmChannel)
     }
 
     private fun createNotification(): Notification {
@@ -398,6 +493,11 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     companion object {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "sensor_data_service_channel"
+        private const val ALARM_NOTIFICATION_ID = 2
+        private const val ALARM_CHANNEL_ID = "seizure_alarm_channel"
+
+        const val ACTION_DISMISS_ALARM = "uk.org.openseizuredetector.action.DISMISS_ALARM"
+        const val ACTION_PAUSE_ALARMS = "uk.org.openseizuredetector.action.PAUSE_ALARMS"
 
         private const val SAMPLE_FREQ_HZ = 25
         private const val ACCEL_SAMPLE_PERIOD_US = 1_000_000 / SAMPLE_FREQ_HZ

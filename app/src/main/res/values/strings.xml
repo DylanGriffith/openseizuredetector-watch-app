@@ -4,4 +4,6 @@
     <string name="notification_channel_description">Service for collecting and sending sensor data</string>
     <string name="notification_title">Seizure Detector Active</string>
     <string name="notification_text">Monitoring sensor data</string>
+    <string name="alarm_channel_name">Seizure Alarms</string>
+    <string name="alarm_channel_description">Seizure warning and alarm alerts</string>
 </resources>

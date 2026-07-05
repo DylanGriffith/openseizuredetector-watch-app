@@ -55,6 +55,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setTheme(android.R.style.Theme_DeviceDefault)
 
+        // Allow the alarm notification's full-screen intent to bring this activity
+        // up over the watch face / lock screen with the display on
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+
         val permissions = arrayOf(
             Manifest.permission.BODY_SENSORS,
             "android.permission.health.READ_HEART_RATE",
