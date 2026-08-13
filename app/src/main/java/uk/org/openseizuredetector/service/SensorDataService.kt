@@ -13,10 +13,12 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.BatteryManager
 import android.os.Binder
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
@@ -98,7 +100,12 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         super.onCreate()
         Log.d(tag, "SensorDataService created")
 
-        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        val attributionContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            createAttributionContext("health_monitoring")
+        } else {
+            this
+        }
+        sensorManager = attributionContext.getSystemService(SENSOR_SERVICE) as SensorManager
         hrSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         alerter = Alerter(this)
@@ -155,6 +162,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         when (event?.sensor?.type) {
             Sensor.TYPE_HEART_RATE -> {
                 val hr = event.values[0].toInt()
+                Log.d(tag, "onSensorChanged: HR=$hr")
                 if (hr > 0) {
                     latestHr = hr
                     _uiState.update { it.copy(heartRate = hr) }
@@ -172,9 +180,11 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                         1000.0 / SensorManager.GRAVITY_EARTH
                 // Round to 0.1 milli-g to keep the JSON payload small
                 accelBuffer.add((magnitudeMg * 10).roundToInt() / 10.0)
+                //Log.d(tag, "onSensorChanged: Accel=$magnitudeMg mg buffer=${accelBuffer.size}")
 
                 if (accelBuffer.size >= BATCH_SIZE) {
-                    sendBatchedAccelData()
+                   Log.d(tag, "onSensorChanged: Sending Data...")
+                   sendBatchedAccelData()
                 }
             }
         }
@@ -217,11 +227,13 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     private fun sendBatchedAccelData() {
         if (accelBuffer.isEmpty()) return
+        Log.d(tag, "sendBatchedAccelData: sending ${accelBuffer.size} samples")
         try {
             val jsonArray = JSONArray()
             accelBuffer.forEach { jsonArray.put(it) }
             accelBuffer.clear()
             val json = JSONObject().put("samples", jsonArray)
+            Log.d(tag, "sendBatchedAccelData: sending ${json.toString()} ")
             sendMessage(MessagePaths.ACCEL_DATA, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
             Log.e(tag, "Error creating or sending batched accel data", e)
@@ -232,6 +244,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         if (latestHr <= 0) return
         try {
             val json = JSONObject().put("hr", latestHr)
+            Log.d(tag, "sendHrData: sending ${json.toString()}")
             sendMessage(MessagePaths.HR_DATA, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
             Log.e(tag, "Error creating or sending HR data", e)

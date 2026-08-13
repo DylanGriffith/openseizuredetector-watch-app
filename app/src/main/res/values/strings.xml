@@ -7,4 +7,5 @@
     <string name="alarm_channel_name">Seizure Alarms</string>
     <string name="alarm_channel_description">Seizure warning and alarm alerts</string>
     <string name="heart_rate_text">Heart rate: %1$s</string>
+    <string name="attribution_health_monitoring">Health Monitoring</string>
 </resources>
