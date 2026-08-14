@@ -10,6 +10,6 @@ the watch display going to sleep (at least you do on my Samsung Galaxy Watch 7) 
 The initial results are disappointing - the battery drains in just over 6 hours, and the data transfer to the phone seems to not happen at regular intervals.   See the issues associated with this repository
 and the discussion here:  https://github.com/orgs/OpenSeizureDetector/discussions/69
 
-Note that the working version is in branch rebuild-v2 until I merge it into main....
+
 
 Graham (graham@openseizuredetector.org.uk)
