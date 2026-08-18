@@ -64,7 +64,8 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     private val handler = Handler(Looper.getMainLooper())
 
     // Accelerometer batching - buffer 25 samples (1 second at 25Hz)
-    private val accelBuffer = ArrayList<Double>(BATCH_SIZE)
+    // Storing raw FloatArray (x,y,z) for future 3D data transmission
+    private val accelBuffer = ArrayList<FloatArray>(BATCH_SIZE)
 
     // Latest heart rate reading (sent on a timer, not on change, so the phone's
     // "HR frozen" fault check sees a regular stream)
@@ -154,7 +155,9 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
         accelSensor?.let {
-            sensorManager.registerListener(this, it, ACCEL_SAMPLE_PERIOD_US)
+            // Request 1 second of hardware batching (1,000,000 microseconds)
+            // to allow CPU to sleep between batches.
+            sensorManager.registerListener(this, it, ACCEL_SAMPLE_PERIOD_US, 1_000_000)
         }
     }
 
@@ -162,7 +165,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         when (event?.sensor?.type) {
             Sensor.TYPE_HEART_RATE -> {
                 val hr = event.values[0].toInt()
-                Log.d(tag, "onSensorChanged: HR=$hr")
+                // Log.d(tag, "onSensorChanged: HR=$hr")
                 if (hr > 0) {
                     latestHr = hr
                     _uiState.update { it.copy(heartRate = hr) }
@@ -170,20 +173,12 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             }
 
             Sensor.TYPE_ACCELEROMETER -> {
-                val x = event.values[0]
-                val y = event.values[1]
-                val z = event.values[2]
-
-                // Android reports m/s^2; the phone-side algorithms expect milli-g
-                // (1000 = 1g), the same units the Garmin watch app sends.
-                val magnitudeMg = sqrt((x * x + y * y + z * z).toDouble()) *
-                        1000.0 / SensorManager.GRAVITY_EARTH
-                // Round to 0.1 milli-g to keep the JSON payload small
-                accelBuffer.add((magnitudeMg * 10).roundToInt() / 10.0)
-                //Log.d(tag, "onSensorChanged: Accel=$magnitudeMg mg buffer=${accelBuffer.size}")
+                // Store raw values to buffer. Intensive calculations (magnitude, rounding)
+                // and transmission are moved to sendBatchedAccelData to reduce CPU wake time.
+                accelBuffer.add(event.values.clone())
 
                 if (accelBuffer.size >= BATCH_SIZE) {
-                   Log.d(tag, "onSensorChanged: Sending Data...")
+                   // Log.d(tag, "onSensorChanged: Sending Data...")
                    sendBatchedAccelData()
                 }
             }
@@ -227,13 +222,28 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     private fun sendBatchedAccelData() {
         if (accelBuffer.isEmpty()) return
-        Log.d(tag, "sendBatchedAccelData: sending ${accelBuffer.size} samples")
+        // Log.d(tag, "sendBatchedAccelData: sending ${accelBuffer.size} samples")
         try {
             val jsonArray = JSONArray()
-            accelBuffer.forEach { jsonArray.put(it) }
+
+            // Calculate magnitudes for current phone app compatibility
+            // This is done once per batch (1Hz) instead of 25Hz.
+            accelBuffer.forEach { values ->
+                val x = values[0]
+                val y = values[1]
+                val z = values[2]
+
+                // Convert m/s^2 to milli-g (1000 = 1g)
+                val magnitudeMg = sqrt((x * x + y * y + z * z).toDouble()) *
+                        1000.0 / SensorManager.GRAVITY_EARTH
+
+                // Round to 0.1 milli-g to keep the JSON payload small
+                jsonArray.put((magnitudeMg * 10).roundToInt() / 10.0)
+            }
+
             accelBuffer.clear()
             val json = JSONObject().put("samples", jsonArray)
-            Log.d(tag, "sendBatchedAccelData: sending ${json.toString()} ")
+            // Log.d(tag, "sendBatchedAccelData: sending ${json.toString()} ")
             sendMessage(MessagePaths.ACCEL_DATA, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
             Log.e(tag, "Error creating or sending batched accel data", e)
@@ -244,7 +254,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         if (latestHr <= 0) return
         try {
             val json = JSONObject().put("hr", latestHr)
-            Log.d(tag, "sendHrData: sending ${json.toString()}")
+            // Log.d(tag, "sendHrData: sending ${json.toString()}")
             sendMessage(MessagePaths.HR_DATA, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
             Log.e(tag, "Error creating or sending HR data", e)

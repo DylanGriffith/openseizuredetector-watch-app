@@ -1,0 +1,8 @@
+Android Wear SD CHANGELOG
+=========================
+
+
+V0.0.1 (18 August 2026) - Updated to use hardware batching of accelerometer data, and move calculations
+                          into 1 second loop to try to improve battery life.
+                        - Added OSD Icon
+V1.0.0 (13 August 2026) - original by Dylan Griffiths, with minor modifications to make it compile and run with OSD phone app V5.0.
