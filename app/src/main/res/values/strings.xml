@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Open Seizure Detector Watch</string>
+    <string name="app_name">WearSD</string>
     <string name="notification_channel_name">Seizure Detector Service</string>
     <string name="notification_channel_description">Service for collecting and sending sensor data</string>
     <string name="notification_title">Seizure Detector Active</string>

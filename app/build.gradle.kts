@@ -14,8 +14,8 @@ android {
         applicationId = "uk.org.openseizuredetector"
         minSdk = 36
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.0.2"
+        versionCode = 5
+        versionName = "0.0.5"
 
     }
 

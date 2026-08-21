@@ -1,8 +1,10 @@
 Android Wear SD CHANGELOG
 =========================
 
-
-V0.0.1 (18 August 2026) - Updated to use hardware batching of accelerometer data, and move calculations
+V0.0.5 (20 August 2026) - Improved logging to help track down data transfer issues
+V0.0.4 (20 August 2026) - Added Wakelock to try to stop the watch going to sleep, preventing data transfer at the required 5 second interval.
+V0.0.3 (20 August 2026) - Increased data transfer period from 1 to 5 seconds to see if that is causing the battery drain problem.
+V0.0.2 (18 August 2026) - Updated to use hardware batching of accelerometer data, and move calculations
                           into 1 second loop to try to improve battery life.
                         - Added OSD Icon
 V1.0.0 (13 August 2026) - original by Dylan Griffiths, with minor modifications to make it compile and run with OSD phone app V5.0.

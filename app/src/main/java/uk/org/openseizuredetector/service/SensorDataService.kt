@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
@@ -63,6 +64,9 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     private val handler = Handler(Looper.getMainLooper())
 
+    // WakeLock to keep CPU awake during periodic sends (when display is off)
+    private lateinit var wakeLock: PowerManager.WakeLock
+
     // Accelerometer batching - buffer 25 samples (1 second at 25Hz)
     // Storing raw FloatArray (x,y,z) for future 3D data transmission
     private val accelBuffer = ArrayList<FloatArray>(BATCH_SIZE)
@@ -70,6 +74,11 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     // Latest heart rate reading (sent on a timer, not on change, so the phone's
     // "HR frozen" fault check sees a regular stream)
     private var latestHr = -1
+
+    // Per-message sequence numbers used by phone-side timing diagnostics.
+    private var accelSeq = 0L
+    private var hrSeq = 0L
+    private var settingsSeq = 0L
 
     // Cache of connected node IDs so we don't look them up for every message
     private var cachedNodeIds: List<String> = emptyList()
@@ -111,6 +120,10 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         alerter = Alerter(this)
 
+        // Initialize WakeLock for keeping CPU awake during periodic sends
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SensorDataService:periodicSend")
+
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
 
@@ -130,6 +143,18 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 return START_STICKY
             }
         }
+
+        // ------------------------------------------------------------------
+        // TEMP WAKELOCK TEST (easy to remove)
+        // Keep a continuous partial wakelock while the service runs, to test
+        // whether deep sleep is causing long watch->phone timing gaps.
+        // Remove this whole block (and the constant in companion object) after testing.
+        if (ENABLE_CONTINUOUS_WAKELOCK_TEST && !wakeLock.isHeld) {
+            wakeLock.acquire()
+            Log.w(tag, "TEMP WAKELOCK TEST: continuous wakelock ACQUIRED")
+        }
+        // ------------------------------------------------------------------
+
         startSensors()
         handler.removeCallbacks(periodicTickRunnable)
         handler.removeCallbacks(settingsRunnable)
@@ -145,6 +170,10 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         sensorManager.unregisterListener(this)
         messageClient.removeListener(this)
         handler.removeCallbacksAndMessages(null)
+        if (wakeLock.isHeld) {
+            wakeLock.release()
+            Log.w(tag, "TEMP WAKELOCK TEST: wakelock RELEASED in onDestroy")
+        }
         alerter.release()
     }
 
@@ -158,6 +187,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             // Request 1 second of hardware batching (1,000,000 microseconds)
             // to allow CPU to sleep between batches.
             sensorManager.registerListener(this, it, ACCEL_SAMPLE_PERIOD_US, 1_000_000)
+            //sensorManager.registerListener(this, it, ACCEL_SAMPLE_PERIOD_US, 0)
         }
     }
 
@@ -222,7 +252,9 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     private fun sendBatchedAccelData() {
         if (accelBuffer.isEmpty()) return
-        // Log.d(tag, "sendBatchedAccelData: sending ${accelBuffer.size} samples")
+        val sentMs = System.currentTimeMillis()
+        val seq = ++accelSeq
+        Log.d(tag, "sendBatchedAccelData: seq=$seq sending ${accelBuffer.size} samples at $sentMs")
         try {
             val jsonArray = JSONArray()
 
@@ -242,7 +274,14 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             }
 
             accelBuffer.clear()
-            val json = JSONObject().put("samples", jsonArray)
+            val json = JSONObject()
+                .put("samples", jsonArray)
+                .put("seq", seq)
+                .put("sent_ms", sentMs)
+            Log.i(
+                tag,
+                "txTiming path=${MessagePaths.ACCEL_DATA} seq=$seq sentMs=$sentMs samples=${jsonArray.length()}"
+            )
             // Log.d(tag, "sendBatchedAccelData: sending ${json.toString()} ")
             sendMessage(MessagePaths.ACCEL_DATA, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
@@ -252,8 +291,14 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     private fun sendHrData() {
         if (latestHr <= 0) return
+        val sentMs = System.currentTimeMillis()
+        val seq = ++hrSeq
         try {
-            val json = JSONObject().put("hr", latestHr)
+            val json = JSONObject()
+                .put("hr", latestHr)
+                .put("seq", seq)
+                .put("sent_ms", sentMs)
+            Log.i(tag, "txTiming path=${MessagePaths.HR_DATA} seq=$seq sentMs=$sentMs hr=$latestHr")
             // Log.d(tag, "sendHrData: sending ${json.toString()}")
             sendMessage(MessagePaths.HR_DATA, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
@@ -262,16 +307,21 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     }
 
     private fun sendSettings() {
+        val sentMs = System.currentTimeMillis()
+        val seq = ++settingsSeq
         try {
             val json = JSONObject()
             json.put("version", packageManager.getPackageInfo(packageName, 0).versionName)
             json.put("name", getString(R.string.app_name))
             json.put("sample_freq", SAMPLE_FREQ_HZ)
+            json.put("seq", seq)
+            json.put("sent_ms", sentMs)
             val battery = readBatteryPc()
             if (battery >= 0) {
                 json.put("battery", battery)
                 _uiState.update { it.copy(batteryPc = battery) }
             }
+            Log.i(tag, "txTiming path=${MessagePaths.SETTINGS} seq=$seq sentMs=$sentMs battery=$battery")
             sendMessage(MessagePaths.SETTINGS, json.toString().toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
             Log.e(tag, "Error creating or sending settings", e)
@@ -288,10 +338,15 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
      */
     private fun sendMessage(path: String, data: ByteArray) {
         val now = System.currentTimeMillis()
+        Log.d(tag, "sendMessage: path=$path, time=$now, cacheValid=${cachedNodeIds.isNotEmpty() && now - nodeCacheTimeMillis < NODE_CACHE_MS}")
+        
         if (cachedNodeIds.isNotEmpty() && now - nodeCacheTimeMillis < NODE_CACHE_MS) {
+            Log.d(tag, "sendMessage: using cached nodes (${cachedNodeIds.size} nodes)")
             cachedNodeIds.forEach { nodeId -> sendToNode(nodeId, path, data) }
             return
         }
+        
+        Log.d(tag, "sendMessage: cache expired or empty, doing node lookup")
         nodeClient.connectedNodes.addOnSuccessListener { nodes ->
             cachedNodeIds = nodes.map { it.id }
             nodeCacheTimeMillis = System.currentTimeMillis()
@@ -299,6 +354,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 Log.w(tag, "sendMessage: no connected nodes for $path")
                 return@addOnSuccessListener
             }
+            Log.d(tag, "sendMessage: found ${nodes.size} connected nodes, sending $path")
             nodes.forEach { node -> sendToNode(node.id, path, data) }
         }.addOnFailureListener { e ->
             Log.e(tag, "Error getting connected nodes", e)
@@ -435,15 +491,34 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     /** 5s tick: send HR, check phone connection freshness, refresh alerting. */
     private val periodicTickRunnable = object : Runnable {
         override fun run() {
-            sendHrData()
-            val connected =
-                System.currentTimeMillis() - lastAlarmStateMillis < PHONE_TIMEOUT_MS
-            if (connected != _uiState.value.phoneConnected) {
-                Log.i(tag, "phoneConnected -> $connected")
-                _uiState.update { it.copy(phoneConnected = connected) }
-                updateAlerting()
+            val currentTimeMs = System.currentTimeMillis()
+            Log.d(tag, "periodicTickRunnable: tick at $currentTimeMs (display off detection)")
+            
+            try {
+                // Use short per-tick wakelock only when continuous test mode is disabled.
+                if (!ENABLE_CONTINUOUS_WAKELOCK_TEST && !wakeLock.isHeld) {
+                    wakeLock.acquire(5000)  // 5-second timeout
+                    Log.d(tag, "periodicTickRunnable: WakeLock acquired")
+                }
+                
+                sendHrData()
+                val connected =
+                    System.currentTimeMillis() - lastAlarmStateMillis < PHONE_TIMEOUT_MS
+                if (connected != _uiState.value.phoneConnected) {
+                    Log.i(tag, "phoneConnected -> $connected")
+                    _uiState.update { it.copy(phoneConnected = connected) }
+                    updateAlerting()
+                }
+            } finally {
+                // Always reschedule, even if there's an exception
+                handler.postDelayed(this, PERIODIC_TICK_MS)
+                
+                // Release WakeLock after a brief delay to allow batched accel data sends
+                if (!ENABLE_CONTINUOUS_WAKELOCK_TEST && wakeLock.isHeld) {
+                    wakeLock.release()
+                    Log.d(tag, "periodicTickRunnable: WakeLock released")
+                }
             }
-            handler.postDelayed(this, PERIODIC_TICK_MS)
         }
     }
 
@@ -524,7 +599,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
         private const val SAMPLE_FREQ_HZ = 25
         private const val ACCEL_SAMPLE_PERIOD_US = 1_000_000 / SAMPLE_FREQ_HZ
-        private const val BATCH_SIZE = SAMPLE_FREQ_HZ // 1 second of samples
+        private const val BATCH_SIZE = 5 * SAMPLE_FREQ_HZ // 5 seconds of samples
 
         private const val PERIODIC_TICK_MS = 5_000L
         private const val SETTINGS_INTERVAL_MS = 60_000L
@@ -533,5 +608,11 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
         private const val PAUSE_DURATION_MS = 3_600_000L // 1 hour
         private const val DISMISS_GRACE_MS = 60_000L
+
+        // ------------------------------------------------------------------
+        // TEMP WAKELOCK TEST (easy to remove)
+        // Set false (or delete) after validating battery-off timing behavior.
+        private const val ENABLE_CONTINUOUS_WAKELOCK_TEST = true
+        // ------------------------------------------------------------------
     }
 }
