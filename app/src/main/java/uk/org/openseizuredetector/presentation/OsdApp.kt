@@ -206,6 +206,7 @@ private fun formatCountdown(millis: Long): String {
 
 private fun formatDuration(millis: Long): String {
     if (millis < 0) return "--"
+    if (millis < 1000) return "${millis}ms"
     val totalSec = (millis / 1000).coerceAtLeast(0)
     return if (totalSec < 60) {
         "${totalSec}s"

@@ -233,10 +233,11 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             val now = System.currentTimeMillis()
             val accelSeq = json.optLong("accel_seq", -1L)
             val accelSentMs = json.optLong("accel_sent_ms", -1L)
+            val phoneReceivedMs = json.optLong("phone_received_ms", -1L)
             val phoneSentMs = json.optLong("phone_sent_ms", -1L)
             val roundTripMs = if (accelSentMs > 0) now - accelSentMs else -1L
-            val phoneProcessingMs = if (accelSentMs > 0 && phoneSentMs > 0) {
-                phoneSentMs - accelSentMs
+            val phoneProcessingMs = if (phoneReceivedMs > 0 && phoneSentMs > 0) {
+                phoneSentMs - phoneReceivedMs
             } else {
                 -1L
             }
