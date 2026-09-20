@@ -64,10 +64,10 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     private val handler = Handler(Looper.getMainLooper())
 
-    // WakeLock to keep CPU awake during periodic sends (when display is off)
+    // WakeLock to keep CPU awake briefly during periodic sends (when display is off)
     private lateinit var wakeLock: PowerManager.WakeLock
 
-    // Accelerometer batching - buffer 25 samples (1 second at 25Hz)
+    // Accelerometer batching - buffer 5 seconds at 25Hz.
     // Storing raw FloatArray (x,y,z) for future 3D data transmission
     private val accelBuffer = ArrayList<FloatArray>(BATCH_SIZE)
 
@@ -88,6 +88,8 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     private var pausedUntilMillis = 0L
     private var dismissGraceUntilMillis = 0L
     private var lastAlarmStateMillis = 0L
+    private var lastAlarmLatencyMs = -1L
+    private var lastAlarmStateSeq = -1L
 
     // Alarm state currently shown as a notification (UNKNOWN = none showing)
     private var shownAlarmNotificationState = AlarmStates.UNKNOWN
@@ -144,16 +146,10 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             }
         }
 
-        // ------------------------------------------------------------------
-        // TEMP WAKELOCK TEST (easy to remove)
-        // Keep a continuous partial wakelock while the service runs, to test
-        // whether deep sleep is causing long watch->phone timing gaps.
-        // Remove this whole block (and the constant in companion object) after testing.
         if (ENABLE_CONTINUOUS_WAKELOCK_TEST && !wakeLock.isHeld) {
             wakeLock.acquire()
             Log.w(tag, "TEMP WAKELOCK TEST: continuous wakelock ACQUIRED")
         }
-        // ------------------------------------------------------------------
 
         startSensors()
         handler.removeCallbacks(periodicTickRunnable)
@@ -234,15 +230,37 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             val json = JSONObject(String(data, StandardCharsets.UTF_8))
             val state = json.optInt("alarm_state", AlarmStates.UNKNOWN)
             val phrase = json.optString("alarm_phrase", "")
+            val now = System.currentTimeMillis()
+            val accelSeq = json.optLong("accel_seq", -1L)
+            val accelSentMs = json.optLong("accel_sent_ms", -1L)
+            val phoneSentMs = json.optLong("phone_sent_ms", -1L)
+            val roundTripMs = if (accelSentMs > 0) now - accelSentMs else -1L
+            val phoneProcessingMs = if (accelSentMs > 0 && phoneSentMs > 0) {
+                phoneSentMs - accelSentMs
+            } else {
+                -1L
+            }
             Log.d(tag, "handleAlarmState: state=$state phrase=$phrase")
 
-            lastAlarmStateMillis = System.currentTimeMillis()
+            lastAlarmStateMillis = now
+            if (roundTripMs >= 0) {
+                lastAlarmLatencyMs = roundTripMs
+                lastAlarmStateSeq = accelSeq
+                logAlarmLatency(accelSeq, roundTripMs, phoneProcessingMs)
+            }
             // A fresh OK/MUTE from the phone means the dismiss has been processed
             if (state == AlarmStates.OK || state == AlarmStates.MUTE) {
                 dismissGraceUntilMillis = 0
             }
             _uiState.update {
-                it.copy(alarmState = state, alarmPhrase = phrase, phoneConnected = true)
+                it.copy(
+                    alarmState = state,
+                    alarmPhrase = phrase,
+                    phoneConnected = true,
+                    lastAlarmLatencyMs = lastAlarmLatencyMs,
+                    lastAlarmStateAgeMs = 0,
+                    lastAlarmStateSeq = lastAlarmStateSeq,
+                )
             }
             updateAlerting()
         } catch (e: Exception) {
@@ -368,6 +386,15 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 Log.e(tag, "Error sending $path to $nodeId", e)
                 cachedNodeIds = emptyList()
             }
+    }
+
+    private fun logAlarmLatency(seq: Long, roundTripMs: Long, phoneProcessingMs: Long) {
+        val message = "alarmLatency seq=$seq roundTripMs=$roundTripMs phoneProcessingMs=$phoneProcessingMs"
+        when {
+            roundTripMs >= LATENCY_CRITICAL_MS -> Log.e(tag, "timingCritical $message")
+            roundTripMs >= LATENCY_WARN_MS -> Log.w(tag, "timingWarn $message")
+            else -> Log.i(tag, "timingOk $message")
+        }
     }
 
     // ------------------------------------------------------------ user actions
@@ -502,8 +529,15 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 }
                 
                 sendHrData()
-                val connected =
-                    System.currentTimeMillis() - lastAlarmStateMillis < PHONE_TIMEOUT_MS
+                val alarmStateAgeMs = if (lastAlarmStateMillis > 0) {
+                    System.currentTimeMillis() - lastAlarmStateMillis
+                } else {
+                    -1L
+                }
+                _uiState.update {
+                    it.copy(lastAlarmStateAgeMs = alarmStateAgeMs)
+                }
+                val connected = alarmStateAgeMs in 0 until PHONE_TIMEOUT_MS
                 if (connected != _uiState.value.phoneConnected) {
                     Log.i(tag, "phoneConnected -> $connected")
                     _uiState.update { it.copy(phoneConnected = connected) }
@@ -604,15 +638,15 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         private const val PERIODIC_TICK_MS = 5_000L
         private const val SETTINGS_INTERVAL_MS = 60_000L
         private const val NODE_CACHE_MS = 30_000L
-        private const val PHONE_TIMEOUT_MS = 15_000L
+        private const val LATENCY_WARN_MS = 30_000L
+        private const val LATENCY_CRITICAL_MS = 120_000L
+        private const val PHONE_TIMEOUT_MS = LATENCY_CRITICAL_MS
 
         private const val PAUSE_DURATION_MS = 3_600_000L // 1 hour
         private const val DISMISS_GRACE_MS = 60_000L
 
-        // ------------------------------------------------------------------
-        // TEMP WAKELOCK TEST (easy to remove)
-        // Set false (or delete) after validating battery-off timing behavior.
-        private const val ENABLE_CONTINUOUS_WAKELOCK_TEST = true
-        // ------------------------------------------------------------------
+        // Diagnostic override only. The foreground service keeps monitoring alive;
+        // this should normally stay false so the CPU can sleep between batches.
+        private const val ENABLE_CONTINUOUS_WAKELOCK_TEST = false
     }
 }

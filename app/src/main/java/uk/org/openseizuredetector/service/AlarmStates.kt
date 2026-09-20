@@ -52,4 +52,7 @@ data class WatchUiState(
     val batteryPc: Int = -1,
     val phoneConnected: Boolean = false,
     val pausedUntilMillis: Long = 0,
+    val lastAlarmLatencyMs: Long = -1,
+    val lastAlarmStateAgeMs: Long = -1,
+    val lastAlarmStateSeq: Long = -1,
 )

@@ -99,6 +99,8 @@ private fun OsdScreen(
             )
         }
 
+        item { LatencyText(state) }
+
         if (state.alarmState in AlarmStates.ALARMING || state.alarmState == AlarmStates.WARNING) {
             item {
                 Chip(
@@ -142,6 +144,30 @@ private fun OsdScreen(
 }
 
 @Composable
+private fun LatencyText(state: WatchUiState) {
+    val latencyMs = state.lastAlarmLatencyMs
+    val ageMs = state.lastAlarmStateAgeMs
+    val color = when {
+        latencyMs >= 120_000 || ageMs >= 120_000 -> Color(0xFFC62828)
+        latencyMs >= 30_000 || ageMs >= 30_000 -> Color(0xFFFFA000)
+        else -> MaterialTheme.colors.onBackground
+    }
+    Text(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        textAlign = TextAlign.Center,
+        color = color,
+        text = buildString {
+            append("Delay ")
+            append(formatDuration(latencyMs))
+            append("   Age ")
+            append(formatDuration(ageMs))
+        }
+    )
+}
+
+@Composable
 private fun StatusBanner(state: WatchUiState) {
     val (color, label) = when {
         !state.phoneConnected -> Color(0xFF616161) to "NO PHONE"
@@ -176,4 +202,14 @@ private fun stateLabel(state: WatchUiState): String =
 private fun formatCountdown(millis: Long): String {
     val totalSec = (millis / 1000).coerceAtLeast(0)
     return "%d:%02d".format(totalSec / 60, totalSec % 60)
+}
+
+private fun formatDuration(millis: Long): String {
+    if (millis < 0) return "--"
+    val totalSec = (millis / 1000).coerceAtLeast(0)
+    return if (totalSec < 60) {
+        "${totalSec}s"
+    } else {
+        "%d:%02d".format(totalSec / 60, totalSec % 60)
+    }
 }
