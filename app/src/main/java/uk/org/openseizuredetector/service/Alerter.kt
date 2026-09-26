@@ -22,7 +22,7 @@ import android.util.Log
  */
 class Alerter(private val context: Context) {
 
-    private enum class Mode { OFF, WARNING, ALARM }
+    private enum class Mode { OFF, WARNING, ALARM_SOUND, ALARM_VIBRATE }
 
     private val tag = "Alerter"
     private val vibrator = context.getSystemService(VibratorManager::class.java).defaultVibrator
@@ -53,17 +53,19 @@ class Alerter(private val context: Context) {
         mode = Mode.WARNING
     }
 
-    fun startAlarm() {
-        if (mode == Mode.ALARM) return
-        Log.i(tag, "startAlarm() - hasSpeaker=$hasSpeaker")
-        if (hasSpeaker) {
+    fun startAlarm(vibrateOnly: Boolean) {
+        val nextMode = if (hasSpeaker && !vibrateOnly) Mode.ALARM_SOUND else Mode.ALARM_VIBRATE
+        if (mode == nextMode) return
+        Log.i(tag, "startAlarm() - hasSpeaker=$hasSpeaker vibrateOnly=$vibrateOnly")
+        stopBeep()
+        if (nextMode == Mode.ALARM_SOUND) {
             vibrate(longArrayOf(0, 800, 400))
             startBeep()
         } else {
-            // No speaker to escalate to - use a longer, more insistent vibration instead
+            // Reuse the existing no-speaker alarm pattern for vibration-only mode.
             vibrate(longArrayOf(0, 1200, 300))
         }
-        mode = Mode.ALARM
+        mode = nextMode
     }
 
     fun stopAll() {

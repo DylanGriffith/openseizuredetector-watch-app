@@ -122,7 +122,7 @@ private fun OsdScreen(
             }
         }
 
-        if (!state.audibleAlarmEnabled || !state.audibleWarningEnabled) {
+        if (!state.audibleAlarmEnabled || state.vibrateOnlyAlerts || !state.audibleWarningEnabled) {
             item {
                 Text(
                     modifier = Modifier
@@ -130,12 +130,7 @@ private fun OsdScreen(
                         .padding(vertical = 2.dp),
                     textAlign = TextAlign.Center,
                     color = Color(0xFFFFA000),
-                    text = when {
-                        !state.audibleAlarmEnabled && !state.audibleWarningEnabled ->
-                            "Alarm and warning alerts disabled"
-                        !state.audibleAlarmEnabled -> "Alarm alerts disabled"
-                        else -> "Warning alerts disabled"
-                    }
+                    text = alertSettingsStatus(state)
                 )
             }
         }
@@ -235,6 +230,15 @@ private fun StatusBanner(state: WatchUiState) {
 
 private fun stateLabel(state: WatchUiState): String =
     state.alarmPhrase.ifBlank { AlarmStates.name(state.alarmState) }
+
+private fun alertSettingsStatus(state: WatchUiState): String = buildList {
+    if (!state.audibleAlarmEnabled) {
+        add("Alarm alerts disabled")
+    } else if (state.vibrateOnlyAlerts) {
+        add("Alerts: vibrate only")
+    }
+    if (!state.audibleWarningEnabled) add("Warning alerts disabled")
+}.joinToString("\n")
 
 private fun formatCountdown(millis: Long): String {
     val totalSec = (millis / 1000).coerceAtLeast(0)

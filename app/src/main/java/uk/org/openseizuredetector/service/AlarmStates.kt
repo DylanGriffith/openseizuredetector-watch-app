@@ -53,6 +53,7 @@ data class WatchUiState(
     val phoneConnected: Boolean = false,
     val pausedUntilMillis: Long = 0,
     val audibleAlarmEnabled: Boolean = true,
+    val vibrateOnlyAlerts: Boolean = false,
     val audibleWarningEnabled: Boolean = true,
     val lastAlarmLatencyMs: Long = -1,
     val lastAlarmStateAgeMs: Long = -1,

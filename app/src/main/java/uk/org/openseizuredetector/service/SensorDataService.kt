@@ -237,6 +237,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             val phoneSentMs = json.optLong("phone_sent_ms", -1L)
             val mutedUntilMs = json.optLong("muted_until_ms", 0L)
             val audibleAlarmEnabled = json.optBoolean("audible_alarm_enabled", true)
+            val vibrateOnlyAlerts = json.optBoolean("vibrate_only_alerts", false)
             val audibleWarningEnabled = json.optBoolean("audible_warning_enabled", true)
             val roundTripMs = if (accelSentMs > 0) now - accelSentMs else -1L
             val phoneProcessingMs = if (phoneReceivedMs > 0 && phoneSentMs > 0) {
@@ -264,6 +265,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                     phoneConnected = true,
                     pausedUntilMillis = mutedUntilMs,
                     audibleAlarmEnabled = audibleAlarmEnabled,
+                    vibrateOnlyAlerts = vibrateOnlyAlerts,
                     audibleWarningEnabled = audibleWarningEnabled,
                     lastAlarmLatencyMs = lastAlarmLatencyMs,
                     lastAlarmStateAgeMs = 0,
@@ -446,7 +448,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             }
 
             state.alarmState in AlarmStates.ALARMING && state.audibleAlarmEnabled -> {
-                alerter.startAlarm()
+                alerter.startAlarm(state.vibrateOnlyAlerts)
                 showAlarmNotification(state)
             }
 
