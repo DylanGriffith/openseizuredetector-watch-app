@@ -44,8 +44,7 @@ import kotlin.math.sqrt
  *  - sends watch settings (battery, version, sample rate) periodically
  *  - receives the detection state back from the phone and drives local alerting
  *    (vibration on WARNING, vibration + beep on ALARM)
- *  - lets the user pause alarms for an hour or dismiss a false alarm, forwarding
- *    those actions to the phone
+ *  - lets the user ask the phone to pause alarms or dismiss a false alarm
  */
 class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessageReceivedListener {
 
@@ -84,7 +83,8 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
     private var cachedNodeIds: List<String> = emptyList()
     private var nodeCacheTimeMillis = 0L
 
-    // Alerting suppression
+    // Alerting suppression. The phone owns the mute timer; this mirrors the latest
+    // muted_until_ms value received from /osd/alarm_state.
     private var pausedUntilMillis = 0L
     private var dismissGraceUntilMillis = 0L
     private var lastAlarmStateMillis = 0L
@@ -141,7 +141,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 return START_STICKY
             }
             ACTION_PAUSE_ALARMS -> {
-                pauseAlarms()
+                requestPauseAlarms(PAUSE_10_MIN_SECONDS)
                 return START_STICKY
             }
         }
@@ -235,6 +235,9 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             val accelSentMs = json.optLong("accel_sent_ms", -1L)
             val phoneReceivedMs = json.optLong("phone_received_ms", -1L)
             val phoneSentMs = json.optLong("phone_sent_ms", -1L)
+            val mutedUntilMs = json.optLong("muted_until_ms", 0L)
+            val audibleAlarmEnabled = json.optBoolean("audible_alarm_enabled", true)
+            val audibleWarningEnabled = json.optBoolean("audible_warning_enabled", true)
             val roundTripMs = if (accelSentMs > 0) now - accelSentMs else -1L
             val phoneProcessingMs = if (phoneReceivedMs > 0 && phoneSentMs > 0) {
                 phoneSentMs - phoneReceivedMs
@@ -249,6 +252,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 lastAlarmStateSeq = accelSeq
                 logAlarmLatency(accelSeq, roundTripMs, phoneProcessingMs)
             }
+            pausedUntilMillis = mutedUntilMs
             // A fresh OK/MUTE from the phone means the dismiss has been processed
             if (state == AlarmStates.OK || state == AlarmStates.MUTE) {
                 dismissGraceUntilMillis = 0
@@ -258,6 +262,9 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                     alarmState = state,
                     alarmPhrase = phrase,
                     phoneConnected = true,
+                    pausedUntilMillis = mutedUntilMs,
+                    audibleAlarmEnabled = audibleAlarmEnabled,
+                    audibleWarningEnabled = audibleWarningEnabled,
                     lastAlarmLatencyMs = lastAlarmLatencyMs,
                     lastAlarmStateAgeMs = 0,
                     lastAlarmStateSeq = lastAlarmStateSeq,
@@ -400,24 +407,15 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
 
     // ------------------------------------------------------------ user actions
 
-    /** Pause all alarms (watch and phone) for an hour; sensor data keeps streaming. */
-    fun pauseAlarms() {
-        Log.i(tag, "pauseAlarms()")
-        pausedUntilMillis = System.currentTimeMillis() + PAUSE_DURATION_MS
-        _uiState.update { it.copy(pausedUntilMillis = pausedUntilMillis) }
-        updateAlerting()
-        sendUserAction(JSONObject().put("action", "mute").put("seconds", PAUSE_DURATION_MS / 1000))
-        handler.removeCallbacks(pauseExpiryRunnable)
-        handler.postDelayed(pauseExpiryRunnable, PAUSE_DURATION_MS)
+    /** Ask the phone to pause all alarms; sensor data keeps streaming. */
+    fun requestPauseAlarms(seconds: Long) {
+        Log.i(tag, "requestPauseAlarms(seconds=$seconds)")
+        sendUserAction(JSONObject().put("action", "mute").put("seconds", seconds))
     }
 
-    /** Cancel a pause started with [pauseAlarms]. */
+    /** Ask the phone to cancel the current alarm pause. */
     fun cancelPause() {
         Log.i(tag, "cancelPause()")
-        pausedUntilMillis = 0
-        handler.removeCallbacks(pauseExpiryRunnable)
-        _uiState.update { it.copy(pausedUntilMillis = 0) }
-        updateAlerting()
         sendUserAction(JSONObject().put("action", "unmute"))
     }
 
@@ -447,12 +445,12 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
                 cancelAlarmNotification()
             }
 
-            state.alarmState in AlarmStates.ALARMING -> {
+            state.alarmState in AlarmStates.ALARMING && state.audibleAlarmEnabled -> {
                 alerter.startAlarm()
                 showAlarmNotification(state)
             }
 
-            state.alarmState == AlarmStates.WARNING -> {
+            state.alarmState == AlarmStates.WARNING && state.audibleWarningEnabled -> {
                 alerter.startWarning()
                 showAlarmNotification(state)
             }
@@ -503,7 +501,7 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             .setContentIntent(fullScreenIntent)
             .setFullScreenIntent(fullScreenIntent, true)
             .addAction(0, "Dismiss", dismissIntent)
-            .addAction(0, "Pause 1h", pauseIntent)
+            .addAction(0, "Mute 10m", pauseIntent)
             .build()
         notificationManager.notify(ALARM_NOTIFICATION_ID, notification)
     }
@@ -566,13 +564,6 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
             sendSettings()
             handler.postDelayed(this, SETTINGS_INTERVAL_MS)
         }
-    }
-
-    private val pauseExpiryRunnable = Runnable {
-        Log.i(tag, "pause expired")
-        pausedUntilMillis = 0
-        _uiState.update { it.copy(pausedUntilMillis = 0) }
-        updateAlerting()
     }
 
     // ------------------------------------------------------------------ misc
@@ -643,7 +634,8 @@ class SensorDataService : Service(), SensorEventListener, MessageClient.OnMessag
         private const val LATENCY_CRITICAL_MS = 120_000L
         private const val PHONE_TIMEOUT_MS = LATENCY_CRITICAL_MS
 
-        private const val PAUSE_DURATION_MS = 3_600_000L // 1 hour
+        const val PAUSE_10_MIN_SECONDS = 10 * 60L
+        const val PAUSE_30_MIN_SECONDS = 30 * 60L
         private const val DISMISS_GRACE_MS = 60_000L
 
         // Diagnostic override only. The foreground service keeps monitoring alive;

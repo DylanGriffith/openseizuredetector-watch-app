@@ -52,7 +52,7 @@ fun OsdApp(service: SensorDataService?) {
                 val state by service.uiState.collectAsState()
                 OsdScreen(
                     state = state,
-                    onPause = service::pauseAlarms,
+                    onPause = service::requestPauseAlarms,
                     onCancelPause = service::cancelPause,
                     onDismiss = service::dismissAlarm,
                 )
@@ -65,7 +65,7 @@ fun OsdApp(service: SensorDataService?) {
 @Composable
 private fun OsdScreen(
     state: WatchUiState,
-    onPause: () -> Unit,
+    onPause: (Long) -> Unit,
     onCancelPause: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -122,6 +122,24 @@ private fun OsdScreen(
             }
         }
 
+        if (!state.audibleAlarmEnabled || !state.audibleWarningEnabled) {
+            item {
+                Text(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    textAlign = TextAlign.Center,
+                    color = Color(0xFFFFA000),
+                    text = when {
+                        !state.audibleAlarmEnabled && !state.audibleWarningEnabled ->
+                            "Alarm and warning alerts disabled"
+                        !state.audibleAlarmEnabled -> "Alarm alerts disabled"
+                        else -> "Warning alerts disabled"
+                    }
+                )
+            }
+        }
+
         item {
             Chip(
                 modifier = Modifier.fillMaxWidth(),
@@ -133,12 +151,31 @@ private fun OsdScreen(
                         text = if (paused) {
                             "Paused ${formatCountdown(state.pausedUntilMillis - now)}\nTap to resume"
                         } else {
-                            "Pause alarms 1h"
+                            "Mute alarms 10m"
                         }
                     )
                 },
-                onClick = if (paused) onCancelPause else onPause,
+                onClick = if (paused) onCancelPause else {
+                    { onPause(SensorDataService.PAUSE_10_MIN_SECONDS) }
+                },
             )
+        }
+
+        if (!paused) {
+            item {
+                Chip(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ChipDefaults.secondaryChipColors(),
+                    label = {
+                        Text(
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center,
+                            text = "Mute alarms 30m"
+                        )
+                    },
+                    onClick = { onPause(SensorDataService.PAUSE_30_MIN_SECONDS) },
+                )
+            }
         }
     }
 }
